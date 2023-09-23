@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option go_package = "github.com/kujilabo/bamboo";
+
+package bamboo;
+
+message WorkerParameter {
+  map<string, string> carrier = 1;
+  map<string, string> headers = 2;
+  string              resultChannel = 3;
+  bytes               data = 4;
+}
+
+enum ResponseType {
+  HEARTBEAT = 1;
+  DATA = 2;
+}
+
+message WorkerResponse {
+  ResponseType type = 1;
+  bytes        data = 2;
+}

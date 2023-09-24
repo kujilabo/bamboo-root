@@ -8,7 +8,6 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
 
@@ -17,19 +16,20 @@ import (
 
 type kafkaRedisBambooWorker struct {
 	consumerOptions  kafka.ReaderConfig
-	publisherOptions redis.UniversalOptions
+	publisherOptions *redis.UniversalOptions
 	workerFunc       WorkerFunc
 	numWorkers       int
-	propagator       propagation.TextMapPropagator
+	heartbeatRespStr string
+	logConfigFunc    LogConfigFunc
 }
 
-func NewKafkaRedisBambooWorker(consumerOptions kafka.ReaderConfig, publisherOptions redis.UniversalOptions, workerFunc WorkerFunc, numWorkers int) BambooWorker {
+func NewKafkaRedisBambooWorker(consumerOptions kafka.ReaderConfig, publisherOptions *redis.UniversalOptions, workerFunc WorkerFunc, numWorkers int, logConfigFunc LogConfigFunc) BambooWorker {
 	return &kafkaRedisBambooWorker{
 		consumerOptions:  consumerOptions,
 		publisherOptions: publisherOptions,
 		workerFunc:       workerFunc,
 		numWorkers:       numWorkers,
-		propagator:       otel.GetTextMapPropagator(),
+		logConfigFunc:    logConfigFunc,
 	}
 }
 
@@ -48,10 +48,10 @@ func (w *kafkaRedisBambooWorker) ping(ctx context.Context) error {
 		return internal.Errorf("conn.ReadPartitions. err: %w", err)
 	}
 
-	publisher := redis.NewUniversalClient(&w.publisherOptions)
+	publisher := redis.NewUniversalClient(w.publisherOptions)
 	defer publisher.Close()
 	if _, err := publisher.Ping(ctx).Result(); err != nil {
-		internal.Errorf("publisher.Ping. err: %w", err)
+		return internal.Errorf("publisher.Ping. err: %w", err)
 	}
 
 	return nil
@@ -59,9 +59,10 @@ func (w *kafkaRedisBambooWorker) ping(ctx context.Context) error {
 
 func (w *kafkaRedisBambooWorker) Run(ctx context.Context) error {
 	logger := internal.FromContext(ctx)
+
 	operation := func() error {
 		if err := w.ping(ctx); err != nil {
-			return err
+			return internal.Errorf("ping. err: %w", err)
 		}
 
 		dispatcher := internal.NewDispatcher()
@@ -89,8 +90,18 @@ func (w *kafkaRedisBambooWorker) Run(ctx context.Context) error {
 				continue
 			}
 
+			done := make(chan interface{})
+			aborted := make(chan interface{})
+
+			if req.JobTimeoutSec != 0 {
+				time.AfterFunc(time.Duration(req.JobTimeoutSec)*time.Second, func() { close(aborted) })
+			}
+
+			heartbeatPublisher := NewRedisBambooHeartbeatPublisher(w.publisherOptions, req.ResultChannel, int(req.HeartbeatIntervalSec), done, aborted)
+			heartbeatPublisher.Run(ctx)
+
 			var carrier propagation.MapCarrier = req.Carrier
-			dispatcher.AddJob(NewRedisJob(ctx, carrier, w.workerFunc, req.Headers, req.Data, w.publisherOptions, req.ResultChannel))
+			dispatcher.AddJob(NewRedisJob(ctx, carrier, w.workerFunc, req.Headers, req.Data, w.publisherOptions, req.ResultChannel, done, aborted, w.logConfigFunc))
 		}
 	}
 

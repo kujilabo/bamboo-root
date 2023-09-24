@@ -23,21 +23,30 @@ type redisJob struct {
 	workerFunc       WorkerFunc
 	headers          map[string]string
 	parameter        []byte
-	publisherOptions redis.UniversalOptions
+	publisherOptions *redis.UniversalOptions
 	resultChannel    string
+	done             chan<- interface{}
+	aborted          <-chan interface{}
+	logConfigFunc    LogConfigFunc
 }
 
-func NewRedisJob(ctx context.Context, carrier propagation.MapCarrier, workerFunc WorkerFunc, headers map[string]string, parameter []byte, publisherOptions redis.UniversalOptions, resultChannel string) RedisJob {
+func NewRedisJob(ctx context.Context, carrier propagation.MapCarrier, workerFunc WorkerFunc, headers map[string]string, parameter []byte, publisherOptions *redis.UniversalOptions, resultChannel string, done chan<- interface{}, aborted <-chan interface{}, logConfigFunc LogConfigFunc) RedisJob {
 	return &redisJob{
 		carrier:          carrier,
-		publisherOptions: publisherOptions,
 		workerFunc:       workerFunc,
+		headers:          headers,
 		parameter:        parameter,
+		publisherOptions: publisherOptions,
 		resultChannel:    resultChannel,
+		done:             done,
+		aborted:          aborted,
+		logConfigFunc:    logConfigFunc,
 	}
 }
 
 func (j *redisJob) Run(ctx context.Context) error {
+	defer close(j.done)
+
 	propagator := otel.GetTextMapPropagator()
 	ctx = propagator.Extract(ctx, j.carrier)
 
@@ -45,6 +54,7 @@ func (j *redisJob) Run(ctx context.Context) error {
 	for k, v := range j.headers {
 		attrs = append(attrs, attribute.KeyValue{Key: attribute.Key(k), Value: attribute.StringValue(v)})
 	}
+	ctx = j.logConfigFunc(ctx, j.headers)
 
 	opts := []trace.SpanStartOption{
 		trace.WithAttributes(attrs...),
@@ -53,12 +63,12 @@ func (j *redisJob) Run(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Run", opts...)
 	defer span.End()
 
-	result, err := j.workerFunc(ctx, j.headers, j.parameter)
+	result, err := j.workerFunc(ctx, j.headers, j.parameter, j.aborted)
 	if err != nil {
 		return internal.Errorf("workerFunc. err: %w", err)
 	}
 
-	resp := WorkerResponse{Data: result}
+	resp := WorkerResponse{Type: ResponseType_DATA, Data: result}
 	respBytes, err := proto.Marshal(&resp)
 	if err != nil {
 		return internal.Errorf("proto.Marshal. err: %w", err)
@@ -66,7 +76,7 @@ func (j *redisJob) Run(ctx context.Context) error {
 
 	respStr := base64.StdEncoding.EncodeToString(respBytes)
 
-	publisher := redis.NewUniversalClient(&j.publisherOptions)
+	publisher := redis.NewUniversalClient(j.publisherOptions)
 	defer publisher.Close()
 
 	if _, err := publisher.Publish(ctx, j.resultChannel, respStr).Result(); err != nil {

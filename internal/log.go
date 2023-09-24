@@ -94,14 +94,8 @@ func FromContext(ctx context.Context) Logger {
 
 	logger, ok := ctx.Value(loggerKey).(Logger)
 	if !ok {
-		// fmt.Printf("not found")
 		logger = mainLogger
 	}
 
 	return logger
 }
-
-// // WithoutContext Gets the main logger
-// func WithoutContext() Logger {
-// 	return mainLogger
-// }

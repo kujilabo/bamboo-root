@@ -3,7 +3,6 @@ package helper
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -15,8 +14,8 @@ type BambooPrameter interface {
 }
 
 type WorkerClient interface {
-	Produce(ctx context.Context, resultChannel string, headers map[string]string, data []byte) error
-	Subscribe(ctx context.Context, resultChannel string, timeout time.Duration) ([]byte, error)
+	Produce(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int, headers map[string]string, data []byte) error
+	Subscribe(ctx context.Context, resultChannel string, jobTimeoutSec int) ([]byte, error)
 	Ping(ctx context.Context) error
 	Close(ctx context.Context)
 }
@@ -33,12 +32,12 @@ func NewWorkerClient(rp bamboo.BambooRequestProducer, rs bamboo.BambooResultSubs
 	}
 }
 
-func (c *workerClient) Produce(ctx context.Context, resultChannel string, headers map[string]string, data []byte) error {
-	return c.rp.Produce(ctx, resultChannel, headers, data)
+func (c *workerClient) Produce(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int, headers map[string]string, data []byte) error {
+	return c.rp.Produce(ctx, resultChannel, heartbeatIntervalSec, jobTimeoutSec, headers, data)
 }
 
-func (c *workerClient) Subscribe(ctx context.Context, redisChannel string, timeout time.Duration) ([]byte, error) {
-	return c.rs.Subscribe(ctx, redisChannel, timeout)
+func (c *workerClient) Subscribe(ctx context.Context, redisChannel string, jobTimeoutSec int) ([]byte, error) {
+	return c.rs.Subscribe(ctx, redisChannel, jobTimeoutSec)
 }
 
 func (c *workerClient) Ping(ctx context.Context) error {
@@ -62,7 +61,7 @@ func (c *StandardClient) newRedisChannelString() (string, error) {
 	return redisChannel.String(), nil
 }
 
-func (c *StandardClient) Call(ctx context.Context, clientName string, headers map[string]string, param []byte, timeout time.Duration) ([]byte, error) {
+func (c *StandardClient) Call(ctx context.Context, clientName string, heartbeatIntervalSec int, jobTimeoutSec int, headers map[string]string, param []byte) ([]byte, error) {
 	redisChannel, err := c.newRedisChannelString()
 	if err != nil {
 		return nil, err
@@ -75,7 +74,7 @@ func (c *StandardClient) Call(ctx context.Context, clientName string, headers ma
 
 	ch := make(chan bamboo.ByteArreayResult)
 	go func() {
-		resultBytes, err := client.Subscribe(ctx, redisChannel, timeout)
+		resultBytes, err := client.Subscribe(ctx, redisChannel, jobTimeoutSec)
 		if err != nil {
 			ch <- bamboo.ByteArreayResult{Value: nil, Error: err}
 			return
@@ -84,7 +83,7 @@ func (c *StandardClient) Call(ctx context.Context, clientName string, headers ma
 		ch <- bamboo.ByteArreayResult{Value: resultBytes, Error: nil}
 	}()
 
-	if err := client.Produce(ctx, redisChannel, headers, param); err != nil {
+	if err := client.Produce(ctx, redisChannel, heartbeatIntervalSec, jobTimeoutSec, headers, param); err != nil {
 		return nil, err
 	}
 

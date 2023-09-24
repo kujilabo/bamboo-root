@@ -27,7 +27,7 @@ func NewRedisBambooRequestProducer(ctx context.Context, workerName string, produ
 	}
 }
 
-func (p *redisBambooRequestProducer) Produce(ctx context.Context, resultChannel string, headers map[string]string, data []byte) error {
+func (p *redisBambooRequestProducer) Produce(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int, headers map[string]string, data []byte) error {
 	carrier := propagation.MapCarrier{}
 
 	spanCtx, span := tracer.Start(ctx, p.workerName)
@@ -36,10 +36,12 @@ func (p *redisBambooRequestProducer) Produce(ctx context.Context, resultChannel 
 	p.propagator.Inject(spanCtx, carrier)
 
 	req := WorkerParameter{
-		Carrier:       carrier,
-		Headers:       headers,
-		ResultChannel: resultChannel,
-		Data:          data,
+		Carrier:              carrier,
+		Headers:              headers,
+		ResultChannel:        resultChannel,
+		HeartbeatIntervalSec: int32(heartbeatIntervalSec),
+		JobTimeoutSec:        int32(jobTimeoutSec),
+		Data:                 data,
 	}
 	reqBytes, err := proto.Marshal(&req)
 	if err != nil {

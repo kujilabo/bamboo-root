@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kujilabo/bamboo-root/internal"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,25 +39,40 @@ func (s *RedisResultSubscriber) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel string, timeout time.Duration) ([]byte, error) {
+func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel string, jobTimeoutSec int) ([]byte, error) {
+	logger := internal.FromContext(ctx)
+
 	pubsub := s.subscriber.Subscribe(ctx, resultChannel)
 	defer pubsub.Close()
 	c1 := make(chan ByteArreayResult, 1)
 	done := make(chan interface{})
-	defer close(done)
+	heartbeat := make(chan int64)
+
+	aborted := make(chan interface{})
+
+	if jobTimeoutSec != 0 {
+		time.AfterFunc(time.Duration(jobTimeoutSec)*time.Second, func() {
+			logger.Debugf("job timed out. resultChannel: %s", resultChannel)
+			close(aborted)
+		})
+	}
 
 	go func() {
 		defer close(c1)
+		defer close(done)
 		for {
 			select {
 			case <-done:
+				fmt.Println("DONE")
 				return
 			default:
+				fmt.Println("WAIT")
 				msg, err := pubsub.ReceiveMessage(ctx)
 				if err != nil {
 					c1 <- ByteArreayResult{Value: nil, Error: err}
 					return
 				}
+				fmt.Println("RECV")
 
 				respBytes, err := base64.StdEncoding.DecodeString(msg.Payload)
 				if err != nil {
@@ -67,24 +83,31 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 				resp := WorkerResponse{}
 				if err := proto.Unmarshal(respBytes, &resp); err != nil {
 					c1 <- ByteArreayResult{Value: nil, Error: err}
-
 					return
 				}
-				c1 <- ByteArreayResult{Value: resp.Data, Error: nil}
+				if resp.Type == ResponseType_HEARTBEAT {
+					heartbeat <- time.Now().Unix()
+				} else {
+					c1 <- ByteArreayResult{Value: resp.Data, Error: nil}
+				}
 			}
 		}
 	}()
 
 	go func() {
-		pulseInterval := time.Second * 3
-		pulse := time.Tick(pulseInterval)
+		var prev int64 = time.Now().Unix()
 		for {
 			select {
 			case <-done:
 				fmt.Println("CLOSE")
 				return
-			case <-pulse:
-				fmt.Println("HEARTBEAT")
+			case next := <-heartbeat:
+				fmt.Println(next - prev)
+				fmt.Println("HEARTBEAT<-")
+				// done <- struct{}{}
+			case <-aborted:
+				fmt.Println("CLOSE")
+				return
 			}
 		}
 	}()
@@ -95,7 +118,7 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 			return nil, res.Error
 		}
 		return res.Value, nil
-	case <-time.After(timeout):
+	case <-aborted:
 		return nil, errors.New("timeout")
 	}
 }

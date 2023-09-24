@@ -14,34 +14,37 @@ import (
 )
 
 type redisRedisBambooWorker struct {
-	consumerOptions  redis.UniversalOptions
+	consumerOptions  *redis.UniversalOptions
 	consumerChannel  string
-	publisherOptions redis.UniversalOptions
+	publisherOptions *redis.UniversalOptions
 	workerFunc       WorkerFunc
 	numWorkers       int
+	heartbeatRespStr string
+	logConfigFunc    LogConfigFunc
 }
 
-func NewRedisRedisBambooWorker(consumerOptions redis.UniversalOptions, consumerChannel string, publisherOptions redis.UniversalOptions, workerFunc WorkerFunc, numWorkers int) BambooWorker {
+func NewRedisRedisBambooWorker(consumerOptions *redis.UniversalOptions, consumerChannel string, publisherOptions *redis.UniversalOptions, workerFunc WorkerFunc, numWorkers int, logConfigFunc LogConfigFunc) BambooWorker {
 	return &redisRedisBambooWorker{
 		consumerOptions:  consumerOptions,
 		consumerChannel:  consumerChannel,
 		publisherOptions: publisherOptions,
 		workerFunc:       workerFunc,
 		numWorkers:       numWorkers,
+		logConfigFunc:    logConfigFunc,
 	}
 }
 
 func (w *redisRedisBambooWorker) ping(ctx context.Context) error {
-	consumer := redis.NewUniversalClient(&w.consumerOptions)
+	consumer := redis.NewUniversalClient(w.consumerOptions)
 	defer consumer.Close()
 	if _, err := consumer.Ping(ctx).Result(); err != nil {
-		internal.Errorf("consumer.Ping. err: %w", err)
+		return internal.Errorf("consumer.Ping. err: %w", err)
 	}
 
-	publisher := redis.NewUniversalClient(&w.publisherOptions)
+	publisher := redis.NewUniversalClient(w.publisherOptions)
 	defer publisher.Close()
 	if _, err := publisher.Ping(ctx).Result(); err != nil {
-		internal.Errorf("publisher.Ping. err: %w", err)
+		return internal.Errorf("publisher.Ping. err: %w", err)
 	}
 
 	return nil
@@ -49,6 +52,7 @@ func (w *redisRedisBambooWorker) ping(ctx context.Context) error {
 
 func (w *redisRedisBambooWorker) Run(ctx context.Context) error {
 	logger := internal.FromContext(ctx)
+
 	operation := func() error {
 		if err := w.ping(ctx); err != nil {
 			return internal.Errorf("ping. err: %w", err)
@@ -58,7 +62,7 @@ func (w *redisRedisBambooWorker) Run(ctx context.Context) error {
 		defer dispatcher.Stop(ctx)
 		dispatcher.Start(ctx, w.numWorkers)
 
-		consumer := redis.NewUniversalClient(&w.publisherOptions)
+		consumer := redis.NewUniversalClient(w.publisherOptions)
 		defer consumer.Close()
 
 		for {
@@ -86,8 +90,22 @@ func (w *redisRedisBambooWorker) Run(ctx context.Context) error {
 				continue
 			}
 
+			done := make(chan interface{})
+			aborted := make(chan interface{})
+
+			if req.JobTimeoutSec != 0 {
+				time.AfterFunc(time.Duration(req.JobTimeoutSec)*time.Second, func() {
+					close(aborted)
+				})
+			}
+
+			reqCtx := w.logConfigFunc(ctx, req.Headers)
+			heartbeatPublisher := NewRedisBambooHeartbeatPublisher(w.publisherOptions, req.ResultChannel, int(req.HeartbeatIntervalSec), done, aborted)
+			heartbeatPublisher.Run(reqCtx)
+
 			var carrier propagation.MapCarrier = req.Carrier
-			dispatcher.AddJob(NewRedisJob(ctx, carrier, w.workerFunc, req.Headers, req.Data, w.publisherOptions, req.ResultChannel))
+			dispatcher.AddJob(NewRedisJob(reqCtx, carrier, w.workerFunc, req.Headers, req.Data, w.publisherOptions, req.ResultChannel, done, aborted, w.logConfigFunc))
+
 		}
 	}
 

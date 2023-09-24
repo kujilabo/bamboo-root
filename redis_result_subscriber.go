@@ -3,8 +3,6 @@ package bamboo
 import (
 	"context"
 	"encoding/base64"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/kujilabo/bamboo-root/internal"
@@ -39,7 +37,7 @@ func (s *RedisResultSubscriber) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel string, jobTimeoutSec int) ([]byte, error) {
+func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int) ([]byte, error) {
 	logger := internal.FromContext(ctx)
 
 	pubsub := s.subscriber.Subscribe(ctx, resultChannel)
@@ -49,30 +47,35 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 	heartbeat := make(chan int64)
 
 	aborted := make(chan interface{})
+	timedout := make(chan interface{})
 
 	if jobTimeoutSec != 0 {
 		time.AfterFunc(time.Duration(jobTimeoutSec)*time.Second, func() {
 			logger.Debugf("job timed out. resultChannel: %s", resultChannel)
-			close(aborted)
+			close(timedout)
 		})
+	} else {
+		logger.Debug("timeout time is inifinity")
 	}
 
 	go func() {
+		defer func() {
+			logger.Debug("stop receiving loop")
+		}()
+
 		defer close(c1)
 		defer close(done)
 		for {
 			select {
 			case <-done:
-				fmt.Println("DONE")
+				logger.Debug("done. stop ReceivingMessage...")
 				return
 			default:
-				fmt.Println("WAIT")
 				msg, err := pubsub.ReceiveMessage(ctx)
 				if err != nil {
 					c1 <- ByteArreayResult{Value: nil, Error: err}
 					return
 				}
-				fmt.Println("RECV")
 
 				respBytes, err := base64.StdEncoding.DecodeString(msg.Payload)
 				if err != nil {
@@ -95,19 +98,29 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 	}()
 
 	go func() {
-		var prev int64 = time.Now().Unix()
+		ticker := time.NewTicker(time.Duration(heartbeatIntervalSec) * time.Second)
+		defer func() {
+			logger.Debug("stop heartbeat loop")
+			ticker.Stop()
+		}()
+
+		last := time.Now().Unix()
+
 		for {
 			select {
 			case <-done:
-				fmt.Println("CLOSE")
+				logger.Debug("done")
 				return
-			case next := <-heartbeat:
-				fmt.Println(next - prev)
-				fmt.Println("HEARTBEAT<-")
-				// done <- struct{}{}
-			case <-aborted:
-				fmt.Println("CLOSE")
+			case last = <-heartbeat:
+				logger.Debug("heartbeat")
+			case <-timedout:
+				logger.Debug("timedout")
 				return
+			case <-ticker.C:
+				if time.Now().Unix()-last > int64(heartbeatIntervalSec)*2 {
+					logger.Debug("heartbeat couldn't be received")
+					aborted <- struct{}{}
+				}
 			}
 		}
 	}()
@@ -119,6 +132,8 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 		}
 		return res.Value, nil
 	case <-aborted:
-		return nil, errors.New("timeout")
+		return nil, ErrAborted
+	case <-timedout:
+		return nil, ErrTimedout
 	}
 }

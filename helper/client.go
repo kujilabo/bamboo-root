@@ -15,7 +15,7 @@ type BambooPrameter interface {
 
 type WorkerClient interface {
 	Produce(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int, headers map[string]string, data []byte) error
-	Subscribe(ctx context.Context, resultChannel string, jobTimeoutSec int) ([]byte, error)
+	Subscribe(ctx context.Context, resultChannel string, heartbeatIntervalSec int, jobTimeoutSec int) ([]byte, error)
 	Ping(ctx context.Context) error
 	Close(ctx context.Context)
 }
@@ -36,8 +36,8 @@ func (c *workerClient) Produce(ctx context.Context, resultChannel string, heartb
 	return c.rp.Produce(ctx, resultChannel, heartbeatIntervalSec, jobTimeoutSec, headers, data)
 }
 
-func (c *workerClient) Subscribe(ctx context.Context, redisChannel string, jobTimeoutSec int) ([]byte, error) {
-	return c.rs.Subscribe(ctx, redisChannel, jobTimeoutSec)
+func (c *workerClient) Subscribe(ctx context.Context, redisChannel string, heartbeatIntervalSec int, jobTimeoutSec int) ([]byte, error) {
+	return c.rs.Subscribe(ctx, redisChannel, heartbeatIntervalSec, jobTimeoutSec)
 }
 
 func (c *workerClient) Ping(ctx context.Context) error {
@@ -74,7 +74,7 @@ func (c *StandardClient) Call(ctx context.Context, clientName string, heartbeatI
 
 	ch := make(chan bamboo.ByteArreayResult)
 	go func() {
-		resultBytes, err := client.Subscribe(ctx, redisChannel, jobTimeoutSec)
+		resultBytes, err := client.Subscribe(ctx, redisChannel, heartbeatIntervalSec, jobTimeoutSec)
 		if err != nil {
 			ch <- bamboo.ByteArreayResult{Value: nil, Error: err}
 			return

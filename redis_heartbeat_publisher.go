@@ -52,9 +52,14 @@ func (h *redisBambooHeartbeatPublisher) Run(ctx context.Context) {
 	}
 
 	heartbeatInterval := time.Duration(h.heartbeatIntervalSec) * time.Second
-	pulse := time.Tick(heartbeatInterval)
+	pulse := time.NewTicker(heartbeatInterval)
 
 	go func() {
+		defer func() {
+			logger.Debug("stop heartbeat loop")
+			pulse.Stop()
+		}()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -66,7 +71,7 @@ func (h *redisBambooHeartbeatPublisher) Run(ctx context.Context) {
 			case <-h.aborted:
 				logger.Debug("aborted. stop SendingPulse...")
 				return
-			case <-pulse:
+			case <-pulse.C:
 				logger.Debug("pulse")
 				publisher := redis.NewUniversalClient(h.publisherOptions)
 				defer publisher.Close()

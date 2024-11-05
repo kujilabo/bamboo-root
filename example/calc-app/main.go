@@ -111,11 +111,12 @@ func main() {
 			expr := expr{app: &app}
 
 			a := expr.workerRedisRedis(logCtx, 3, 5)
+			b := expr.workerRedisRedis(logCtx, a, 7)
 
 			if expr.getError() != nil {
-				logger.Errorf("failed to run (3 * 5). err: %v", expr.getError())
+				logger.Errorf("failed to run (3 * 5 * 7). err: %v", expr.getError())
 			} else {
-				logger.Infof("3 * 5 = %d", a)
+				logger.Infof("3 * 5 * 7= %d", b)
 			}
 		}()
 	}

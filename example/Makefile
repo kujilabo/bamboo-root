@@ -11,7 +11,18 @@ gen-proto:
 	
 .PHONY: run-worker-redis-redis
 run-worker-redis-redis:
-	go run .
+	@pushd ./worker-redis-redis && \
+	go run . && \
+	popd
+
+.PHONY: run-calc-app
+run-calc-app:
+	@pushd ./calc-app && \
+	go run . && \
+	popd
 
 docker-up:
 	@docker compose -f ./docker-compose.yml up -d
+
+docker-down:
+	@docker compose -f ./docker-compose.yml down

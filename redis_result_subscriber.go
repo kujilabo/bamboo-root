@@ -51,11 +51,10 @@ func (s *RedisResultSubscriber) Subscribe(ctx context.Context, resultChannel str
 
 	if jobTimeoutSec != 0 {
 		time.AfterFunc(time.Duration(jobTimeoutSec)*time.Second, func() {
-			logger.Debugf("job timed out. resultChannel: %s", resultChannel)
 			close(timedout)
 		})
 	} else {
-		logger.Debug("timeout time is inifinity")
+		logger.Debug("timeout time is infinite")
 	}
 
 	go func() {

@@ -19,7 +19,6 @@ type kafkaRedisBambooWorker struct {
 	publisherOptions *redis.UniversalOptions
 	workerFunc       WorkerFunc
 	numWorkers       int
-	heartbeatRespStr string
 	logConfigFunc    LogConfigFunc
 }
 
